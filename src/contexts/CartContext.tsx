@@ -1,8 +1,9 @@
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { toast } from '@/components/ui/use-toast';
+import React, { createContext, useState, useContext, useEffect, ReactNode } from "react";
+import { useAuth } from "./AuthContext";
+import { toast } from "@/components/ui/use-toast";
 
-export interface Product {
+interface Product {
   id: number;
   name: string;
   description: string;
@@ -11,154 +12,265 @@ export interface Product {
   image_url: string;
 }
 
-export interface CartItem {
+interface CartItem {
   product: Product;
   quantity: number;
 }
 
+interface ServerCartItem {
+  id: number;
+  product_id: number;
+  name: string;
+  price: number;
+  quantity: number;
+  image_url: string;
+}
+
 interface CartContextType {
   items: CartItem[];
-  addToCart: (product: Product, quantity?: number) => void;
+  addToCart: (product: Product, quantity: number) => void;
   removeFromCart: (productId: number) => void;
   updateQuantity: (productId: number, quantity: number) => void;
   clearCart: () => void;
-  totalItems: number;
   subtotal: number;
+  totalItems: number;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
-export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [items, setItems] = useState<CartItem[]>([]);
+  const { token, isAuthenticated } = useAuth();
   
-  // Load cart from localStorage on initial render
+  // Calculate derived values
+  const subtotal = items.reduce(
+    (sum, item) => sum + item.product.price * item.quantity,
+    0
+  );
+  
+  const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
+
+  // Fetch cart from API if authenticated
   useEffect(() => {
-    const savedCart = localStorage.getItem('cart');
-    if (savedCart) {
+    const fetchCart = async () => {
+      if (isAuthenticated && token) {
+        try {
+          const response = await fetch("http://localhost:5000/api/cart", {
+            headers: {
+              "x-auth-token": token,
+            },
+          });
+
+          if (response.ok) {
+            const cartData: ServerCartItem[] = await response.json();
+            
+            // Convert server cart format to client format
+            const cartItems: CartItem[] = cartData.map(item => ({
+              product: {
+                id: item.product_id,
+                name: item.name,
+                description: "",
+                price: item.price,
+                stock: 999, // We don't have this in the response
+                image_url: item.image_url
+              },
+              quantity: item.quantity
+            }));
+            
+            setItems(cartItems);
+          }
+        } catch (error) {
+          console.error("Error fetching cart:", error);
+        }
+      }
+    };
+
+    fetchCart();
+  }, [isAuthenticated, token]);
+
+  // Add item to cart
+  const addToCart = async (product: Product, quantity: number) => {
+    // Update UI immediately for responsiveness
+    const existingItemIndex = items.findIndex(
+      (item) => item.product.id === product.id
+    );
+
+    const newItems = [...items];
+
+    if (existingItemIndex >= 0) {
+      newItems[existingItemIndex] = {
+        ...newItems[existingItemIndex],
+        quantity: newItems[existingItemIndex].quantity + quantity,
+      };
+    } else {
+      newItems.push({ product, quantity });
+    }
+
+    setItems(newItems);
+    
+    // If authenticated, sync with server
+    if (isAuthenticated && token) {
       try {
-        setItems(JSON.parse(savedCart));
-      } catch (e) {
-        console.error('Failed to parse saved cart', e);
+        const response = await fetch("http://localhost:5000/api/cart", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-token": token,
+          },
+          body: JSON.stringify({
+            product_id: product.id,
+            quantity,
+          }),
+        });
+
+        if (!response.ok) {
+          // Revert UI change on error
+          setItems(items);
+          const errorData = await response.json();
+          throw new Error(errorData.message || "Failed to add item to cart");
+        }
+      } catch (error) {
+        console.error("Error adding to cart:", error);
+        toast({
+          title: "Error",
+          description: "Failed to add item to cart",
+          variant: "destructive",
+        });
       }
     }
-  }, []);
-  
-  // Save cart to localStorage whenever it changes
-  useEffect(() => {
-    localStorage.setItem('cart', JSON.stringify(items));
-  }, [items]);
-
-  const addToCart = (product: Product, quantity = 1) => {
-    setItems(prevItems => {
-      const existingItemIndex = prevItems.findIndex(item => item.product.id === product.id);
-      
-      if (existingItemIndex > -1) {
-        // Update existing item
-        const updatedItems = [...prevItems];
-        const newQuantity = updatedItems[existingItemIndex].quantity + quantity;
-        
-        if (newQuantity > product.stock) {
-          toast({
-            title: "Cannot Add Item",
-            description: `Sorry, only ${product.stock} in stock`,
-            variant: "destructive",
-          });
-          return prevItems;
-        }
-        
-        updatedItems[existingItemIndex] = {
-          ...updatedItems[existingItemIndex],
-          quantity: newQuantity
-        };
-        
-        toast({
-          title: "Cart Updated",
-          description: `${product.name} quantity updated to ${newQuantity}`,
-        });
-        
-        return updatedItems;
-      } else {
-        // Add new item
-        if (quantity > product.stock) {
-          toast({
-            title: "Cannot Add Item",
-            description: `Sorry, only ${product.stock} in stock`,
-            variant: "destructive",
-          });
-          return prevItems;
-        }
-        
-        toast({
-          title: "Item Added",
-          description: `${product.name} added to your cart`,
-        });
-        
-        return [...prevItems, { product, quantity }];
-      }
-    });
   };
 
-  const removeFromCart = (productId: number) => {
-    setItems(prevItems => {
-      const updatedItems = prevItems.filter(item => item.product.id !== productId);
+  // Remove item from cart
+  const removeFromCart = async (productId: number) => {
+    // Update UI immediately
+    const newItems = items.filter((item) => item.product.id !== productId);
+    setItems(newItems);
+    
+    // If authenticated, sync with server
+    if (isAuthenticated && token) {
+      // Find the cart item ID
+      const itemToRemove = items.find(item => item.product.id === productId);
       
-      if (updatedItems.length < prevItems.length) {
-        toast({
-          title: "Item Removed",
-          description: "Item has been removed from your cart",
-        });
-      }
-      
-      return updatedItems;
-    });
-  };
+      if (itemToRemove) {
+        try {
+          // In a real implementation, we would store the cart item ID
+          // Here we're making a simplified assumption
+          const response = await fetch(`http://localhost:5000/api/cart/${productId}`, {
+            method: "DELETE",
+            headers: {
+              "x-auth-token": token,
+            },
+          });
 
-  const updateQuantity = (productId: number, quantity: number) => {
-    setItems(prevItems => {
-      const updatedItems = prevItems.map(item => {
-        if (item.product.id === productId) {
-          if (quantity > item.product.stock) {
-            toast({
-              title: "Cannot Update Item",
-              description: `Sorry, only ${item.product.stock} in stock`,
-              variant: "destructive",
-            });
-            return item;
+          if (!response.ok) {
+            // Revert UI change on error
+            setItems(items);
+            throw new Error("Failed to remove item from cart");
           }
-          
-          return { ...item, quantity };
+        } catch (error) {
+          console.error("Error removing from cart:", error);
+          toast({
+            title: "Error",
+            description: "Failed to remove item from cart",
+            variant: "destructive",
+          });
         }
-        return item;
-      });
+      }
+    }
+  };
+
+  // Update item quantity
+  const updateQuantity = async (productId: number, quantity: number) => {
+    if (quantity <= 0) {
+      removeFromCart(productId);
+      return;
+    }
+    
+    // Update UI immediately
+    const newItems = items.map((item) =>
+      item.product.id === productId ? { ...item, quantity } : item
+    );
+    
+    setItems(newItems);
+    
+    // If authenticated, sync with server
+    if (isAuthenticated && token) {
+      // Find the cart item ID
+      const itemToUpdate = items.find(item => item.product.id === productId);
       
-      return updatedItems;
-    });
+      if (itemToUpdate) {
+        try {
+          // In a real implementation, we would store the cart item ID
+          // Here we're making a simplified assumption
+          const response = await fetch(`http://localhost:5000/api/cart/${productId}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "x-auth-token": token,
+            },
+            body: JSON.stringify({
+              quantity,
+            }),
+          });
+
+          if (!response.ok) {
+            // Revert UI change on error
+            setItems(items);
+            throw new Error("Failed to update cart");
+          }
+        } catch (error) {
+          console.error("Error updating cart:", error);
+          toast({
+            title: "Error",
+            description: "Failed to update cart quantity",
+            variant: "destructive",
+          });
+        }
+      }
+    }
   };
 
-  const clearCart = () => {
+  // Clear cart
+  const clearCart = async () => {
+    // Update UI immediately
     setItems([]);
-    toast({
-      title: "Cart Cleared",
-      description: "All items have been removed from your cart",
-    });
-  };
+    
+    // If authenticated, sync with server
+    if (isAuthenticated && token) {
+      try {
+        const response = await fetch("http://localhost:5000/api/cart", {
+          method: "DELETE",
+          headers: {
+            "x-auth-token": token,
+          },
+        });
 
-  // Calculate total number of items
-  const totalItems = items.reduce((total, item) => total + item.quantity, 0);
-  
-  // Calculate subtotal
-  const subtotal = items.reduce((total, item) => total + (item.product.price * item.quantity), 0);
+        if (!response.ok) {
+          throw new Error("Failed to clear cart");
+        }
+      } catch (error) {
+        console.error("Error clearing cart:", error);
+        toast({
+          title: "Error",
+          description: "Failed to clear cart",
+          variant: "destructive",
+        });
+      }
+    }
+  };
 
   return (
-    <CartContext.Provider value={{
-      items,
-      addToCart,
-      removeFromCart,
-      updateQuantity,
-      clearCart,
-      totalItems,
-      subtotal
-    }}>
+    <CartContext.Provider
+      value={{
+        items,
+        addToCart,
+        removeFromCart,
+        updateQuantity,
+        clearCart,
+        subtotal,
+        totalItems,
+      }}
+    >
       {children}
     </CartContext.Provider>
   );
@@ -167,7 +279,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
 export const useCart = () => {
   const context = useContext(CartContext);
   if (context === undefined) {
-    throw new Error('useCart must be used within a CartProvider');
+    throw new Error("useCart must be used within a CartProvider");
   }
   return context;
 };

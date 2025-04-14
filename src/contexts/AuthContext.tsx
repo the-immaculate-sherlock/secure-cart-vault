@@ -1,6 +1,5 @@
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { toast } from '@/components/ui/use-toast';
+import React, { createContext, useState, useContext, useEffect, ReactNode } from "react";
 
 interface User {
   id: number;
@@ -10,104 +9,149 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  isLoading: boolean;
+  token: string | null;
+  isAuthenticated: boolean;
+  loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, address: string) => Promise<void>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [token, setToken] = useState<string | null>(localStorage.getItem("token"));
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!token);
+  const [loading, setLoading] = useState<boolean>(true);
 
+  // Load user data if token exists
   useEffect(() => {
-    // Check for stored token
-    const token = localStorage.getItem('token');
-    if (token) {
-      // In a real app, verify token with backend
-      const userData = JSON.parse(localStorage.getItem('user') || '{}');
-      setUser(userData);
-    }
-    setIsLoading(false);
-  }, []);
+    const loadUser = async () => {
+      if (token) {
+        try {
+          const response = await fetch("http://localhost:5000/api/auth/me", {
+            headers: {
+              "x-auth-token": token,
+            },
+          });
+
+          if (response.ok) {
+            const userData = await response.json();
+            setUser(userData);
+            setIsAuthenticated(true);
+          } else {
+            // Token is invalid
+            localStorage.removeItem("token");
+            setToken(null);
+            setUser(null);
+            setIsAuthenticated(false);
+          }
+        } catch (error) {
+          console.error("Error loading user:", error);
+          setUser(null);
+          setIsAuthenticated(false);
+        }
+      }
+      setLoading(false);
+    };
+
+    loadUser();
+  }, [token]);
 
   const login = async (email: string, password: string) => {
     try {
-      setIsLoading(true);
+      const response = await fetch("http://localhost:5000/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Login failed");
+      }
+
+      const data = await response.json();
+      localStorage.setItem("token", data.token);
+      setToken(data.token);
       
-      // Mock API call - in a real app, this would call your backend
-      if (email === 'user@example.com' && password === 'password') {
-        const mockUser = { id: 1, name: 'Test User', email };
-        const mockToken = 'mock-jwt-token';
-        
-        // Store in localStorage
-        localStorage.setItem('token', mockToken);
-        localStorage.setItem('user', JSON.stringify(mockUser));
-        setUser(mockUser);
-        
-        toast({
-          title: "Login Successful",
-          description: `Welcome back, ${mockUser.name}!`,
-        });
-      } else {
-        throw new Error('Invalid credentials');
+      // Fetch user data
+      const userResponse = await fetch("http://localhost:5000/api/auth/me", {
+        headers: {
+          "x-auth-token": data.token,
+        },
+      });
+      
+      if (userResponse.ok) {
+        const userData = await userResponse.json();
+        setUser(userData);
+        setIsAuthenticated(true);
       }
     } catch (error) {
-      toast({
-        title: "Login Failed",
-        description: error instanceof Error ? error.message : "Something went wrong",
-        variant: "destructive"
-      });
+      console.error("Login error:", error);
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
-  const register = async (name: string, email: string, password: string) => {
+  const register = async (name: string, email: string, password: string, address: string) => {
     try {
-      setIsLoading(true);
-      
-      // Mock API call - in a real app, this would call your backend
-      // Simulating a successful registration
-      const mockUser = { id: Date.now(), name, email };
-      const mockToken = 'mock-jwt-token';
-      
-      // Store in localStorage
-      localStorage.setItem('token', mockToken);
-      localStorage.setItem('user', JSON.stringify(mockUser));
-      setUser(mockUser);
-      
-      toast({
-        title: "Registration Successful",
-        description: `Welcome, ${name}!`,
+      const response = await fetch("http://localhost:5000/api/auth/register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name, email, password, address }),
       });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Registration failed");
+      }
+
+      const data = await response.json();
+      localStorage.setItem("token", data.token);
+      setToken(data.token);
+      
+      // Fetch user data
+      const userResponse = await fetch("http://localhost:5000/api/auth/me", {
+        headers: {
+          "x-auth-token": data.token,
+        },
+      });
+      
+      if (userResponse.ok) {
+        const userData = await userResponse.json();
+        setUser(userData);
+        setIsAuthenticated(true);
+      }
     } catch (error) {
-      toast({
-        title: "Registration Failed",
-        description: error instanceof Error ? error.message : "Something went wrong",
-        variant: "destructive"
-      });
+      console.error("Registration error:", error);
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    localStorage.removeItem("token");
+    setToken(null);
     setUser(null);
-    toast({
-      title: "Logged Out",
-      description: "You have been successfully logged out",
-    });
+    setIsAuthenticated(false);
   };
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, register, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        isAuthenticated,
+        loading,
+        login,
+        register,
+        logout,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -116,7 +160,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
 };
